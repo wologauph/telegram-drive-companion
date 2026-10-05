@@ -23,6 +23,7 @@ from core.process_mgr import is_app_running, kill_app, launch_app, find_installe
 from core.queue_cleaner import inspect_transfers, clean_stuck_transfers
 from core.network_tuner import inspect_network_config, apply_optimal_network
 from core.patcher import check_patch_status, run_patch
+from core.sync_monitor import sync_monitor
 
 # 颜色与现代主题配色 (Catppuccin Mocha / Deep Modern Dark)
 BG_MAIN = "#1e1e2e"
@@ -129,7 +130,16 @@ class TelegramDriveCompanionGUI(tk.Tk):
             command=self.action_tune_network
         )
 
-        # 按钮 4: 启动 / 重启客户端 与 新版本修复 双列布局
+        # 按钮 4: 目录同步实时监测后台
+        self.create_action_button(
+            btn_container,
+            text="📡 目录同步实时监测后台 (进度/网速/ETA看板)",
+            subtext="实时显示目录同步百分比、瞬时网速 (MB/s)、预计剩余时间、正在处理文件与历史流水",
+            accent=ACCENT_CYAN,
+            command=self.action_show_sync_monitor
+        )
+
+        # 按钮 5: 启动 / 重启客户端 与 新版本修复 双列布局
         twin_frame = tk.Frame(btn_container, bg=BG_MAIN)
         twin_frame.pack(fill="x", pady=4)
         twin_frame.columnconfigure(0, weight=1)
@@ -339,9 +349,18 @@ class TelegramDriveCompanionGUI(tk.Tk):
                 net_color = WARNING_YELLOW
 
             queue_info = inspect_transfers()
+            sync_snap = sync_monitor.get_progress_snapshot()
+
             if queue_info["jobs_count"] == 0:
-                queue_text = "🛡️ 队列纯净健康 (0 活跃卡死任务)"
-                queue_color = SUCCESS_GREEN
+                if sync_snap["has_pair"] and sync_snap["speed_bps"] > 1024:
+                    queue_text = f"🛡️ 纯净 | 📡 同步中: {sync_snap['speed_text']} ({sync_snap['percent']:.1f}%)"
+                    queue_color = SUCCESS_GREEN
+                elif sync_snap["has_pair"] and sync_snap["enabled"]:
+                    queue_text = f"🛡️ 纯净 | 📡 同步待命 ({sync_snap['synced_files']}/{sync_snap['total_files']} 文件)"
+                    queue_color = SUCCESS_GREEN
+                else:
+                    queue_text = "🛡️ 队列纯净健康 (0 活跃卡死任务)"
+                    queue_color = SUCCESS_GREEN
             elif queue_info["jobs_count"] > 0:
                 queue_text = f"⚠️ 发现 {queue_info['jobs_count']} 个任务在列 (含可能卡死)"
                 queue_color = DANGER_RED
@@ -375,14 +394,14 @@ class TelegramDriveCompanionGUI(tk.Tk):
             kill_app()
             time.sleep(1)
 
-            self.append_log("2. 正在无损注入 7 大核心切片...", "INFO")
+            self.append_log("2. 正在无损注入核心切片 (含设置弹窗与保护机制说明)...", "INFO")
             try:
                 ok = run_patch(target_app_path=app_path)
                 if ok:
                     self.append_log("补丁注入与配置对齐 100% 成功！", "SUCCESS")
                     self.append_log("WebView2 缓存已清空，赞助弹窗已彻底切除！", "CLEAN")
                     self.refresh_status_async()
-                    messagebox.showinfo("完成", "全量深度汉化与免弹窗补丁注入成功！\n\n已切除启动赞助弹窗，已汉化所有硬编码说明！")
+                    messagebox.showinfo("完成", "全量深度汉化与免弹窗补丁注入成功！\n\n已切除启动赞助弹窗，所有说明弹窗与按钮已全部汉化！")
                 else:
                     self.append_log("补丁注入遇到异常！", "ERROR")
                     messagebox.showerror("失败", "补丁注入未完全成功，请查看详细日志。")
@@ -427,6 +446,9 @@ class TelegramDriveCompanionGUI(tk.Tk):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def action_show_sync_monitor(self):
+        SyncMonitorWindow(self)
+
     def action_restart_app(self):
         def worker():
             self.append_log("正在平稳重启 Telegram Drive...", "INFO")
@@ -454,8 +476,8 @@ class TelegramDriveCompanionGUI(tk.Tk):
 
     def action_show_explainer(self):
         top = tk.Toplevel(self)
-        top.title("📖 Telegram Drive 核心参数与黄金调优深度解析")
-        top.geometry("640x520")
+        top.title("📖 Telegram Drive 核心参数与官方报告深度解析")
+        top.geometry("740x620")
         top.configure(bg=BG_MAIN)
         top.transient(self)
 
@@ -471,29 +493,274 @@ class TelegramDriveCompanionGUI(tk.Tk):
         )
         txt.pack(fill="both", expand=True, padx=12, pady=12)
 
-        content = """【为什么这样调？黄金参数大白话深度剖析】
+        content = """【Telegram Drive 核心网络与设置官方权威解析】
 
-1. 为什么设置 30 秒心跳保活 (Keep-Alive Interval = 30s)？
-   Telegram 官方服务器对翻墙代理的闲置连接极其敏感。国内翻墙连接大文件时，只要稍微有几秒钟没有数据往来，代理节点或 Telegram 网关就会静默掐断连接（Socket Drop）。设为 30 秒心跳后，软件每 30 秒向电报发一次轻量 Ping，保持通道始终处于活跃状态，杜绝网络假死断流！
+一、网络优化与长连接核心参数
+1. 重试退避间隔 (Retry Base Backoff) 与最大退避等待 (Retry Max Backoff)：
+   • 原理：当网络请求遇到错误时，客户端采用指数退避机制（Exponential Backoff with Jitter）来避免重试风暴。
+   • 建议调整：基础退避设为 1000ms (1秒)，最大退避设为 30000ms (30秒) 至 60000ms (60秒)。遇到偶发网络闪断时，软件会从1秒、2秒、4秒逐步拉长等待，既不会在网络波动瞬间频繁重试造成雪崩，也能在断网恢复后自愈，完全可以设得比较长！
 
-2. 为什么将最大上传并发设为 1 (Max Concurrent Uploads = 1)？
-   很多主人误以为并发数越高越好，但 Telegram 官方针对中国大陆 IP 和代理有非常严苛的防刷机制（FLOOD_WAIT）。当 2 个或 3 个大视频同时上传时，多个连接会互相抢占代理带宽，导致极高概率触发丢包或电报服务端主动中断连接！
-   调为 1（单任务逐个上传）是大文件稳定传输的黄金准则，速度最平稳、绝不丢包断流！
+2. Telegram 数据中心选择 (Preferred DC - 自动 vs 指定 DC)：
+   • 官方源码真相：每个 Telegram 账户在注册时，其核心数据（User Entity、会话、消息）就永久绑定了固定的 Home DC（中国大陆手机号注册通常分配在 DC4 荷兰或 DC5 新加坡）。
+   • 强烈建议：必须选择【auto (自动)】！如果强行指定其他 DC（如 DC1 迈阿密），电报服务器会返回 MIGRATE_DC 错误，或者在底层通过跨国骨干网跨机房转发，不仅不会加速，反而严重增加握手延迟与断流风险！
 
-3. 为什么分片大小调为 512 KB (Chunk Size = 512 KB)？
-   这是契合 Telegram MTProto 底层传输协议的最佳尺寸。如果分片设为 1MB 或更大，遇到网络稍有抖动就要重传整个 1MB；若设为 128KB，又会有太高频的握手延迟。512KB 是兼顾抗抖动与满速吞吐的最优平衡点。
+3. 数据中心切换重试次数 (DC Fallback Attempts)：
+   • 默认 2~4 次。当连接主数据中心失败时，客户端尝试自动切换备选路由的重试次数。保持 2~4 次即可。
 
-4. 为什么请求超时设为 4 倍 (Timeout Multiplier = 4)？
-   默认 1 倍超时往往只有十几秒，只要代理节点出现瞬间波动，软件就会立即判死判定为失败。调为 4 倍后，软件会给网络长达一两分钟的宽限期，即使网络卡顿也会耐心等待数据回包。
+4. 遵循官方限频等待 (Flood Wait Respect)：
+   • 为什么必须开启？电报官方对 API 频率有极其严苛的限流保护（FLOOD_WAIT_X）。如果开启，遇到限流时程序会乖乖休眠 X 秒后自动重试；如果关闭并强行高并发请求，电报官方防火墙会判定为恶意自动化攻击，极易导致账号被封禁（Banned）或长期禁言！
 
-5. 为什么失败重试设为 5 次 (Retry Attempts = 5)？
-   遇到偶尔的闪断，软件会在后台自动进行 5 次指数退避重试，直接自愈恢复，绝不再需要您手动重新点上传！
+5. 传输带宽上限 (Bandwidth Limit) 与切片大小 (Chunk Size)：
+   • 带宽上限设为 0 (不限速) 最佳，独占利用您的代理全部速度。
+   • 切片大小 512 KB 最佳：契合 MTProto 底层传输的最佳 MTU 规格，兼顾吞吐量与抗抖动。
 
-6. 为什么关闭自动更新 (Auto-Update = False)？
-   官方一旦自动静默升级，就会用未汉化的官方英文原版直接覆盖掉我们的汉化执行体，导致弹窗和英文复发。关闭后，日常使用安稳省心；需要升级时，直接在管家里点一次升级热修复即可！
+6. 长时连接保活心跳 (Keep-Alive Interval: 15s / 30s / 120s / 关闭)：
+   • 官方实现：代码每隔设定秒数在后台向 api.telegram.org:443 发送轻量 TCP 连接探测，用于维持翻墙代理路由活跃。
+   • 15 秒最好吗？如果您使用的翻墙节点或本地 Clash 客户端闲置规则非常激进（比如闲置 15~20秒就掐断 TCP），那么设为 15秒 是最稳妥激进的防掐断选择；国际标准通常 30秒 是兼顾低握手开销与保活的最佳平衡点。在经常中断的网络环境下，设为 15 秒完全没问题！
+
+二、本地接口与批量打包
+7. 批量打包内存上限 (Bulk Archive Max Memory - 默认 256 MiB)：
+   • 源码真相：这是当通过 REST API 批量调用 /files/bulk 将多个文件打包为 .zip 下载流时，在内存中构建流媒体切片所允许占用的最大内存空间。若文件超出此限制，API 会拒绝打包，防止内存溢出导致程序崩溃。
+
+8. REST API 本地接口有什么用？它有密钥：
+   • 用途：允许本地第三方脚本、自动化程序（例如 Python/Node.js 或银月）通过 HTTP 接口全自动化管理电报网盘！支持自动化列出、搜索、上传、下载、删除文件及统计存储。
+   • 密钥安全：密钥仅保存在本机内存并监听在 127.0.0.1 本地回环，不接入外网，非常安全。
+
+三、上传与视频模式
+9. 上传前压缩文件夹 (Zip folders before upload)：
+   • 官方源码真相 (fs.rs / useFileUpload.ts)：由于 Telegram 原生没有“文件夹消息”概念，如果关闭此项，当您手动点击“上传文件夹”时，界面会直接弹窗报错拒绝上传！因此如果想手动上传整个文件夹，必须开启此项，它会自动打成单个 .zip。
+   • 补充：如果是【目录自动同步 (Folder Sync)】，则不受此限制，同步引擎会自动遍历内部所有单文件分别上传。
+
+10. 默认视频上传方式（文件模式 File vs 媒体模式 Media）：
+   • 官方源码真相 (fs.rs 第 127~210 行)：
+     ① 画质与完整性：无论选哪种模式，上传的文件字节流 100% 原汁原味原盘上传，绝不重新编码、绝不压缩画质！
+     ② 区别在于是否附加 Attribute::Video：
+        - 文件模式 (File)：作为普通文件（Document）上传，无法在线流播，客户端必须下载完整文件后才能观看。
+        - 媒体模式 (Media)：上传前本地读取时长与分辨率，附加在线播放属性。在电报手机端与电脑端支持直接在线点播、带缩略图预览、显示视频时长！
+        - 注意：媒体模式要求视频必须是 MP4/MOV 且头部完好；若格式不兼容可切换回文件模式。
 """
         txt.insert("end", content)
         txt.config(state="disabled")
+
+class SyncMonitorWindow(tk.Toplevel):
+    """目录同步实时监测独立后台窗口"""
+    def __init__(self, master):
+        super().__init__(master)
+        self.title("📡 Telegram Drive 目录同步实时监测后台 · 银月工坊")
+        self.geometry("760x600")
+        self.minsize(700, 520)
+        self.configure(bg=BG_MAIN)
+
+        self.is_topmost = False
+        self.setup_ui()
+        self.refresh_loop()
+
+    def setup_ui(self):
+        # 顶部 Bar
+        top_bar = tk.Frame(self, bg=BG_MAIN, padx=16, pady=10)
+        top_bar.pack(fill="x")
+
+        t_lbl = tk.Label(
+            top_bar,
+            text="📡 目录同步实时监测后台",
+            font=("Microsoft YaHei UI", 14, "bold"),
+            fg=TEXT_PRIMARY,
+            bg=BG_MAIN
+        )
+        t_lbl.pack(side="left")
+
+        self.btn_pin = tk.Button(
+            top_bar,
+            text="📌 窗口置顶",
+            font=("Microsoft YaHei UI", 9),
+            bg=BUTTON_BG,
+            fg=TEXT_PRIMARY,
+            bd=0,
+            padx=10,
+            pady=3,
+            cursor="hand2",
+            command=self.toggle_topmost
+        )
+        self.btn_pin.pack(side="right", padx=(8, 0))
+
+        btn_refresh = tk.Button(
+            top_bar,
+            text="🔄 立即刷新",
+            font=("Microsoft YaHei UI", 9),
+            bg=BUTTON_BG,
+            fg=ACCENT_CYAN,
+            bd=0,
+            padx=10,
+            pady=3,
+            cursor="hand2",
+            command=self.update_metrics
+        )
+        btn_refresh.pack(side="right")
+
+        # 映射卡片
+        self.card_pair = tk.Frame(self, bg=BG_CARD, bd=1, relief="solid", padx=14, pady=8)
+        self.card_pair.pack(fill="x", padx=16, pady=4)
+
+        self.lbl_pair_info = tk.Label(
+            self.card_pair,
+            text="正在检测同步映射...",
+            font=("Microsoft YaHei UI", 9),
+            fg=TEXT_PRIMARY,
+            bg=BG_CARD,
+            justify="left",
+            wraplength=700
+        )
+        self.lbl_pair_info.pack(anchor="w")
+
+        # 核心指标 4 列卡片
+        stats_frame = tk.Frame(self, bg=BG_MAIN, padx=16, pady=6)
+        stats_frame.pack(fill="x")
+        stats_frame.columnconfigure((0, 1, 2, 3), weight=1)
+
+        self.val_speed = self.create_metric_card(stats_frame, 0, "⚡ 实时网速", "0 KB/s", SUCCESS_GREEN)
+        self.val_eta = self.create_metric_card(stats_frame, 1, "⏳ 预计剩余 (ETA)", "--", ACCENT_CYAN)
+        self.val_files = self.create_metric_card(stats_frame, 2, "📊 文件进度", "0 / 0", TEXT_PRIMARY)
+        self.val_bytes = self.create_metric_card(stats_frame, 3, "📦 传输数据量", "0 B / 0 B", WARNING_YELLOW)
+
+        # 进度条区
+        prog_frame = tk.Frame(self, bg=BG_CARD, bd=1, relief="solid", padx=14, pady=10)
+        prog_frame.pack(fill="x", padx=16, pady=6)
+
+        self.lbl_prog_title = tk.Label(
+            prog_frame,
+            text="总体同步进度：0.0%",
+            font=("Microsoft YaHei UI", 10, "bold"),
+            fg=TEXT_PRIMARY,
+            bg=BG_CARD
+        )
+        self.lbl_prog_title.pack(anchor="w")
+
+        # 现代画布进度条
+        self.can_prog = tk.Canvas(prog_frame, height=18, bg="#1e1e2e", bd=0, highlightthickness=0)
+        self.can_prog.pack(fill="x", pady=(6, 4))
+
+        self.lbl_active_task = tk.Label(
+            prog_frame,
+            text="当前活动任务：无",
+            font=("Microsoft YaHei UI", 9),
+            fg=TEXT_MUTED,
+            bg=BG_CARD,
+            wraplength=700,
+            justify="left"
+        )
+        self.lbl_active_task.pack(anchor="w")
+
+        # 历史流水日志列表
+        log_frame = tk.Frame(self, bg=BG_MAIN, padx=16, pady=6)
+        log_frame.pack(fill="both", expand=True)
+
+        l_title = tk.Label(
+            log_frame,
+            text="📋 最近同步历史流水 (Live Activity Feed)：",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            fg=TEXT_MUTED,
+            bg=BG_MAIN
+        )
+        l_title.pack(anchor="w", pady=(0, 4))
+
+        self.txt_sync_logs = tk.Text(
+            log_frame,
+            bg=BG_CARD,
+            fg=TEXT_PRIMARY,
+            font=("Consolas", 9),
+            padx=10,
+            pady=8,
+            bd=0,
+            wrap="word"
+        )
+        self.txt_sync_logs.pack(fill="both", expand=True)
+
+        # 底部按钮
+        bot_bar = tk.Frame(self, bg=BG_MAIN, padx=16, pady=10)
+        bot_bar.pack(fill="x")
+
+        btn_open_folder = tk.Button(
+            bot_bar,
+            text="📂 打开本地同步文件夹",
+            font=("Microsoft YaHei UI", 9),
+            bg=BUTTON_BG,
+            fg=TEXT_PRIMARY,
+            bd=0,
+            padx=12,
+            pady=4,
+            cursor="hand2",
+            command=self.open_local_folder
+        )
+        btn_open_folder.pack(side="left")
+
+    def create_metric_card(self, parent, col, title, initial_val, color):
+        f = tk.Frame(parent, bg=BG_CARD, bd=1, relief="solid", padx=10, pady=8)
+        f.grid(row=0, column=col, sticky="nsew", padx=4)
+
+        tk.Label(f, text=title, font=("Microsoft YaHei UI", 8), fg=TEXT_MUTED, bg=BG_CARD).pack(anchor="w")
+        lbl_val = tk.Label(f, text=initial_val, font=("Microsoft YaHei UI", 12, "bold"), fg=color, bg=BG_CARD)
+        lbl_val.pack(anchor="w", pady=(2, 0))
+        return lbl_val
+
+    def toggle_topmost(self):
+        self.is_topmost = not self.is_topmost
+        self.wm_attributes("-topmost", self.is_topmost)
+        self.btn_pin.config(
+            text="📌 取消置顶" if self.is_topmost else "📌 窗口置顶",
+            bg="#543e78" if self.is_topmost else BUTTON_BG
+        )
+
+    def open_local_folder(self):
+        snap = sync_monitor.get_progress_snapshot()
+        if snap["has_pair"]:
+            p = snap["pair"]["local_path"]
+            if os.path.exists(p):
+                subprocess.Popen(["explorer.exe", p])
+
+    def update_metrics(self):
+        snap = sync_monitor.get_progress_snapshot()
+        if not snap["has_pair"]:
+            self.lbl_pair_info.config(text="⚠️ 尚未检测到任何已配置的同步目录。请在 Telegram Drive 设置 → 目录自动同步 中添加。")
+            return
+
+        pair = snap["pair"]
+        dir_text = "单向上传到云端" if pair["direction"] == "upload_only" else "双向自动同步"
+        info_str = f"📁 本地目录: {pair['local_path']}\n🎯 目标频道: {pair['label']} (ID: {pair['channel_id']}) | 模式: {dir_text} | 状态: {snap['status_text']}"
+        self.lbl_pair_info.config(text=info_str)
+
+        self.val_speed.config(text=snap["speed_text"])
+        self.val_eta.config(text=snap["eta_text"])
+        self.val_files.config(text=f"{snap['synced_files']} / {snap['total_files']}")
+
+        sz_done = f"{snap['synced_bytes'] / (1024**3):.2f} GB" if snap['synced_bytes'] >= 1024**3 else f"{snap['synced_bytes'] / (1024**2):.1f} MB"
+        sz_total = f"{snap['total_bytes'] / (1024**3):.2f} GB" if snap['total_bytes'] >= 1024**3 else f"{snap['total_bytes'] / (1024**2):.1f} MB"
+        self.val_bytes.config(text=f"{sz_done} / {sz_total}")
+
+        pct = snap["percent"]
+        self.lbl_prog_title.config(text=f"总体同步进度：{pct:.1f}% ({snap['synced_files']}/{snap['total_files']} 文件)")
+        self.lbl_active_task.config(text=f"当前活动任务：{snap['active_file']}")
+
+        # 绘制进度条
+        self.can_prog.delete("all")
+        w = self.can_prog.winfo_width()
+        if w <= 1:
+            w = 700
+        fill_w = int(w * (pct / 100.0))
+        if fill_w > 0:
+            self.can_prog.create_rectangle(0, 0, fill_w, 18, fill=ACCENT_CYAN, width=0)
+
+        # 更新历史流水
+        self.txt_sync_logs.delete("1.0", "end")
+        for log_item in snap["recent_logs"]:
+            line = f"[{log_item['time']}] [{log_item['action'].upper()}] {log_item['path']} - {log_item['detail']}\n"
+            self.txt_sync_logs.insert("end", line)
+
+    def refresh_loop(self):
+        try:
+            self.update_metrics()
+        except Exception:
+            pass
+        self.after(1500, self.refresh_loop)
 
 def main():
     app = TelegramDriveCompanionGUI()
@@ -501,3 +768,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
