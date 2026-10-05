@@ -1,0 +1,17 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Logs
+logs/*.log
+!logs/.gitkeep
+
+# Backups
+*.bak
+
+# Environment
+.env
+.venv
+env/
+venv/
