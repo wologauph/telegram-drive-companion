@@ -36,9 +36,11 @@ class SyncMonitor:
                 FROM sync_pairs
             """)
             for row in c.fetchall():
-                # 去除 Windows 扩展路径前缀 \\?\
                 raw_path = row[1] or ""
-                clean_path = raw_path.replace(r"\\?\/", "").replace(r"\\?\\", "")
+                if raw_path.startswith("\\\\?\\") or raw_path.startswith("//?/"):
+                    clean_path = raw_path[4:]
+                else:
+                    clean_path = raw_path
                 pairs.append({
                     "id": row[0],
                     "local_path": clean_path,
